@@ -1,0 +1,96 @@
+---
+title: "Analysis of Data Science programs"
+author: "Daniel Acuna"
+date: "March 28, 2016"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+require(tm)
+require(tsne)
+require(ggrepel)
+require(slam)
+# data set obtained from https://twitter.com/jevinwest/status/713488411819028480
+data_science_programs <- read.csv('data/colleges_data_science_programs.csv')
+```
+
+```{r}
+interesting_dimensions <- c('name', 'program', 'degree', 'online', 'oncampus', 'department')
+data_science_programs_ss <- subset(data_science_programs, country == 'US')[, interesting_dimensions]
+data_science_programs_ss$degree <- factor(data_science_programs_ss$degree, c('Certificate', 'Bachelors', 'Masters', 'Doctorate'))
+data_science_programs_ss$department[data_science_programs_ss$department == 'none'] <- ''
+```
+
+
+Transform text of departments and programs to vector representations
+```{r}
+# transform program and department into vector descriptions
+program_cp <- Corpus(VectorSource(data_science_programs_ss$program))
+program_cp <- tm_map(program_cp, removePunctuation)
+program_cp <- tm_map(program_cp, stripWhitespace)
+program_cp <- tm_map(program_cp, removeWords, stopwords('english'))
+program_dtm <- DocumentTermMatrix(program_cp, control = list(stemming = TRUE, stopwords = TRUE, minWordLength = 3))
+program_tfidf <- weightTfIdf(program_dtm)
+
+# 5% or more of the tfidf weights
+program_tfidf <- program_tfidf[, col_sums(program_tfidf) > quantile(col_sums(program_tfidf), 0.5)]
+
+department_cp <- Corpus(VectorSource(data_science_programs_ss$department))
+department_cp <- tm_map(department_cp, removePunctuation)
+department_cp <- tm_map(department_cp, stripWhitespace)
+department_cp <- tm_map(department_cp, removeWords, stopwords('english'))
+department_dtm <- DocumentTermMatrix(department_cp, control = list(stemming = TRUE, stopwords = TRUE, minWordLength = 3))
+department_tfidf <- weightTfIdf(department_dtm)
+
+department_tfidf <- department_tfidf[, col_sums(department_tfidf) > quantile(col_sums(department_tfidf), 0.5)]
+
+# remove programs that do not have tfidf
+good_idx <- (row_sums(program_dtm) > 0) & (row_sums(department_dtm) > 0) & (row_sums(program_tfidf) > 0) & (row_sums(department_tfidf) > 0)
+
+department_feat <- as.data.frame(as.matrix(department_tfidf))
+colnames(department_feat) <- paste0('department_', colnames(department_tfidf))
+program_feat <- as.data.frame(as.matrix(program_tfidf))
+colnames(program_feat) <- paste0('program_', colnames(program_tfidf))
+```
+
+Put all the data together
+```{r}
+
+programs_X <- cbind(model.matrix(~degree - 1, data_science_programs_ss), 
+	data_science_programs_ss[, c('online', 'oncampus')], 
+	department_feat, 
+	program_feat)
+programs_X$online <- as.numeric(programs_X$online)
+programs_X$oncampus <- as.numeric(programs_X$oncampus)
+programs_X <- programs_X[good_idx, ]
+
+```
+Run Principal component analysis on data
+```{r}
+
+embeddings <- princomp(programs_X)$scores[, c(1, 2)]
+colnames(embeddings) <- c('x', 'y')
+visualization_df <- cbind(data_science_programs_ss[good_idx, c('name', 'program')], embeddings)
+visualization_df$label <- paste(visualization_df$name, visualization_df$program, sep = '--')
+visualization_df$highlight <- (visualization_df$name == 'Syracuse University')
+
+
+visualization_ggplot <- ggplot(visualization_df, 
+	aes(x=x, y=y, label=label, color=highlight)) + 
+	geom_point(size=0.5) + 
+	geom_text_repel(size=2, segment.size = 0.25)+
+	theme_classic() +
+	theme(legend.position="none",
+		axis.text.x = element_blank(),
+  axis.text.y = element_blank(),
+  axis.ticks = element_blank(),
+		axis.title.x = element_blank(),
+		axis.title.y = element_blank()) +
+	scale_color_manual(values=c('#AAAAAA', 'red'))
+print(visualization_ggplot)
+
+pdf('figures/data_science_programs_pca.pdf', height = 11, width = 11)
+print(visualization_ggplot)
+dev.off()
+```
